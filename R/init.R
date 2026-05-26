@@ -16,6 +16,14 @@ __pycache__/
 .DS_Store
 "
 
+SCE_TIER_LABELS <- c(
+  "1" = "Tier 1 — Public / aggregate data",
+  "2" = "Tier 2 — De-identified EHR / OMOP",
+  "3" = "Tier 3 — Limited dataset (SCE lite)",
+  "4" = "Tier 4 — Identified records",
+  "5" = "Tier 5 — Identified + unstructured / Clarity"
+)
+
 #' Load upstream phenotype data from registry and project YAML
 #'
 #' @param uuid Character. UUID of the upstream phenotype.
@@ -129,102 +137,142 @@ __pycache__/
   )
 }
 
-#' Initialize a new phenotype project
-#'
-#' Runs an interactive interview to collect project metadata and writes the
-#' advocate-phenotype.yaml schema, README.md, .gitignore, and stub directories.
-#'
-#' @param output_dir Directory where the project will be created.
-#'   Defaults to the current working directory.
-#' @param derive_from UUID of an upstream phenotype to derive from.
-#' @param registry_path Path to registry.yaml (used when derive_from is set).
-#' @return Invisibly returns the path to the project directory.
-#' @export
-crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NULL) {
-  upstream <- NULL
-  if (!is.null(derive_from)) {
-    cat(cli::style_bold("\nLoading upstream phenotype…\n"))
-    upstream <- .load_upstream(derive_from, registry_path)
-    cat(cli::col_green("✓"), "Found:", cli::style_bold(upstream$phenotype_name %||% derive_from), "\n")
-    cat("  PI:", upstream$pi_name %||% "—", "\n")
-    cat("  Version:", upstream$version %||% "—", "\n")
-    cat("  Status:", upstream$validation_status %||% "—", "\n\n")
+# Runs the yes/no decision tree and returns sce_tier, data_tier, environment,
+# omop_aligned, clarity_required. Offers an override prompt at the end.
+.infer_sce_tier <- function() {
+  cat(cli::style_bold("\n── SCE Tier Assessment ──────────────────────────────\n"))
+
+  identified <- .crio_confirm(
+    "Does this project use identified patient records?", default = FALSE
+  )
+
+  if (!identified) {
+    ehr_query <- .crio_confirm("Does it query EHR or OMOP data?", default = TRUE)
+    if (!ehr_query) {
+      tier            <- 2L
+      data_tier       <- "A"
+      environment     <- "gcp"
+      omop_aligned    <- .crio_confirm("OMOP aligned?", default = FALSE)
+      clarity_required <- FALSE
+    } else {
+      tier            <- 3L
+      data_tier       <- "B"
+      environment     <- "azure_tre"
+      omop_aligned    <- TRUE
+      clarity_required <- FALSE
+    }
+  } else {
+    clarity_use <- .crio_confirm(
+      "Does it require unstructured notes, Clarity, or CUI data?", default = FALSE
+    )
+    if (clarity_use) {
+      tier            <- 5L
+      data_tier       <- "D"
+      environment     <- "azure_tre"
+      omop_aligned    <- FALSE
+      clarity_required <- TRUE
+    } else {
+      tier            <- 4L
+      data_tier       <- "C"
+      environment     <- "azure_tre"
+      omop_aligned    <- .crio_confirm("OMOP aligned?", default = FALSE)
+      clarity_required <- FALSE
+    }
   }
 
-  # Investigator section
-  inv <- .collect_investigator()
+  label <- SCE_TIER_LABELS[as.character(tier)]
+  cat(cli::col_cyan("  Inferred:"), label, "\n")
 
-  pi_role <- .crio_choose(
-    "PI role",
-    c("researcher", "clinical_ops", "data_scientist", "quality_analyst", "informaticist")
-  )
-  department <- .crio_prompt("Department")
-
-  # Phenotype section
-  cat(cli::style_bold("\n── Phenotype ────────────────────────────────────────\n"))
-  phenotype_name <- .crio_prompt("Phenotype name")
-
-  domain <- .crio_choose(
-    "Domain",
-    c("condition", "drug", "procedure", "measurement", "observation")
-  )
-
-  description       <- .crio_prompt("Description")
-  inclusion_criteria <- .crio_prompt("Inclusion criteria")
-  exclusion_criteria <- .crio_prompt("Exclusion criteria")
-  omop_aligned      <- .crio_confirm("OMOP aligned?", default = FALSE)
-  clarity_required  <- .crio_confirm("Epic Clarity required?", default = FALSE)
-
-  # Compute section
-  cat(cli::style_bold("\n── Compute ──────────────────────────────────────────\n"))
-  default_tier <- if (!is.null(upstream)) as.character(upstream$sce_tier) else NULL
-  sce_tier <- as.integer(.crio_prompt("SCE tier (1-5)", default = default_tier))
-
-  default_dt <- if (!is.null(upstream)) upstream$data_tier else NULL
-  data_tier  <- .crio_choose("Data tier", c("A", "B", "C", "D"))
-  if (!is.null(upstream$data_tier)) {
-    # Honor default from upstream via prompt
-    data_tier <- upstream$data_tier
+  override <- .crio_confirm("Override inferred tier?", default = FALSE)
+  if (override) {
+    tier_str        <- .crio_choose("SCE tier", c("1", "2", "3", "4", "5"))
+    tier            <- as.integer(tier_str)
+    data_tier       <- .crio_choose("Data tier", c("A", "B", "C", "D"))
+    environment     <- .crio_choose("Compute environment", c("azure_tre", "gcp", "local"))
+    omop_aligned    <- .crio_confirm("OMOP aligned?", default = omop_aligned)
+    clarity_required <- .crio_confirm("Epic Clarity required?", default = clarity_required)
   }
 
-  environment <- .crio_choose(
-    "Compute environment",
-    c("azure_tre", "gcp", "local")
+  list(
+    sce_tier         = tier,
+    data_tier        = data_tier,
+    environment      = environment,
+    omop_aligned     = omop_aligned,
+    clarity_required = clarity_required
   )
+}
 
-  # IRB section (required for tier 3+)
+# For tier >= 3, asks whether this is a research project and, if so, collects
+# IRB details. Returns list(irb_number, irb_status).
+.infer_irb <- function(sce_tier) {
   irb_number <- irb_status <- NULL
   if (sce_tier >= 3) {
     cat(cli::style_bold("\n── IRB ──────────────────────────────────────────────\n"))
-    irb_number <- .crio_prompt("IRB number")
-    irb_status <- .crio_choose("IRB status", c("active", "exempt", "pending"))
+    is_research <- .crio_confirm(
+      "Is this a research project (not clinical ops or QI)?", default = TRUE
+    )
+    if (is_research) {
+      irb_number <- .crio_prompt("IRB number")
+      irb_status <- .crio_choose("IRB status", c("active", "exempt", "pending"))
+    }
   }
-  funding_source <- .crio_prompt("Funding source (optional, Enter to skip)", default = "")
-  if (nchar(funding_source) == 0) funding_source <- NULL
+  list(irb_number = irb_number, irb_status = irb_status)
+}
 
-  # Derivation rationale (if deriving)
-  derivation_rationale <- NULL
-  derived_version      <- NULL
-  if (!is.null(derive_from)) {
-    derivation_rationale <- .crio_prompt("Derivation rationale")
-    derived_version      <- upstream$version
-  }
-
+#' Initialize a new phenotype project
+#'
+#' Creates the project directory structure and writes advocate-phenotype.yaml,
+#' README.md, and .gitignore from the supplied arguments. For an interactive
+#' guided interview use \code{crio_init_interactive()}.
+#'
+#' @param pi_name PI full name.
+#' @param pi_email Institutional email.
+#' @param department Department name.
+#' @param phenotype_name Phenotype display name.
+#' @param domain One of "condition", "drug", "procedure", "measurement", "observation".
+#' @param sce_tier Integer 1-5.
+#' @param data_tier One of "A", "B", "C", "D".
+#' @param environment One of "azure_tre", "gcp", "local".
+#' @param description Free-text description.
+#' @param inclusion_criteria Free-text inclusion criteria.
+#' @param exclusion_criteria Free-text exclusion criteria.
+#' @param pi_role PI role string. Default "researcher".
+#' @param pi_orcid ORCID iD string (optional).
+#' @param staff_id Staff ID string (optional; used when no ORCID).
+#' @param omop_aligned Logical. Default FALSE.
+#' @param clarity_required Logical. Default FALSE.
+#' @param irb_number IRB number string (optional).
+#' @param irb_status One of "active", "exempt", "pending" (optional).
+#' @param funding_source Funding source string (optional).
+#' @param output_dir Directory to create the project in. Defaults to current working directory.
+#' @param derive_from UUID of upstream phenotype (optional).
+#' @param derived_version Upstream version string (optional).
+#' @param derivation_rationale Text explaining why this phenotype is derived (optional).
+#' @param upstream_inclusion_criteria Used to compute inherited_criteria status (optional).
+#' @param upstream_exclusion_criteria Used to compute inherited_criteria status (optional).
+#' @return Invisibly returns the project directory path.
+#' @export
+crio_init <- function(
+  pi_name, pi_email, department, phenotype_name, domain,
+  sce_tier, data_tier, environment, description,
+  inclusion_criteria, exclusion_criteria,
+  pi_role = "researcher", pi_orcid = NULL, staff_id = NULL,
+  omop_aligned = FALSE, clarity_required = FALSE,
+  irb_number = NULL, irb_status = NULL, funding_source = NULL,
+  output_dir = NULL, derive_from = NULL, derived_version = NULL,
+  derivation_rationale = NULL,
+  upstream_inclusion_criteria = NULL, upstream_exclusion_criteria = NULL
+) {
   project_id <- as.character(uuid::UUIDgenerate())
   now        <- .crio_now()
 
-  project_block <- list(
-    id      = project_id,
-    created = now,
-    updated = now
-  )
+  project_block <- list(id = project_id, created = now, updated = now)
   if (!is.null(derive_from)) {
     project_block$derived_from         <- derive_from
     project_block$derived_version      <- derived_version
     project_block$derivation_rationale <- derivation_rationale
   }
 
-  # inherited_criteria
   .criteria_status <- function(current, up) {
     if (is.null(up)) return("new")
     if (identical(current, up)) "inherited" else "modified"
@@ -235,26 +283,26 @@ crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NUL
       list(
         field        = "inclusion_criteria",
         from_version = derived_version,
-        status       = .criteria_status(inclusion_criteria, upstream$inclusion_criteria)
+        status       = .criteria_status(inclusion_criteria, upstream_inclusion_criteria)
       ),
       list(
         field        = "exclusion_criteria",
         from_version = derived_version,
-        status       = .criteria_status(exclusion_criteria, upstream$exclusion_criteria)
+        status       = .criteria_status(exclusion_criteria, upstream_exclusion_criteria)
       )
     )
   }
 
-  identifier <- inv$pi_orcid %||% inv$staff_id
+  identifier <- pi_orcid %||% staff_id
 
   schema <- list(
     project = project_block,
     investigator = list(
-      pi_name      = inv$pi_name,
-      pi_email     = inv$pi_email,
+      pi_name      = pi_name,
+      pi_email     = pi_email,
       pi_role      = pi_role,
-      pi_orcid     = inv$pi_orcid,
-      staff_id     = inv$staff_id,
+      pi_orcid     = pi_orcid,
+      staff_id     = staff_id,
       contributors = list()
     ),
     institution = list(
@@ -264,7 +312,7 @@ crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NUL
       funding_source = funding_source
     ),
     compute = list(
-      sce_tier     = sce_tier,
+      sce_tier     = as.integer(sce_tier),
       data_tier    = data_tier,
       environment  = environment,
       requested_at = now,
@@ -302,11 +350,7 @@ crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NUL
     )
   )
 
-  project_dir <- if (!is.null(output_dir)) {
-    normalizePath(output_dir, mustWork = FALSE)
-  } else {
-    getwd()
-  }
+  project_dir <- normalizePath(output_dir %||% getwd(), mustWork = FALSE)
   dir.create(project_dir, recursive = TRUE, showWarnings = FALSE)
 
   for (stub in STUB_DIRS) {
@@ -314,14 +358,12 @@ crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NUL
   }
 
   .write_schema(schema, file.path(project_dir, "advocate-phenotype.yaml"))
-
   writeLines(GITIGNORE_CONTENT, file.path(project_dir, ".gitignore"))
-
   writeLines(
     .readme_content(
       name               = phenotype_name,
-      pi_name            = inv$pi_name,
-      identifier         = identifier,
+      pi_name            = pi_name,
+      identifier         = identifier %||% "",
       pi_role            = pi_role,
       domain             = domain,
       sce_tier           = sce_tier,
@@ -338,4 +380,82 @@ crio_init <- function(output_dir = NULL, derive_from = NULL, registry_path = NUL
   cat("  Run: crio_source()\n\n")
 
   invisible(project_dir)
+}
+
+#' Interactively initialize a new phenotype project
+#'
+#' Runs a guided interview to collect project metadata, infers the SCE tier
+#' from data-access questions, then delegates to \code{crio_init()}.
+#'
+#' @param output_dir Directory where the project will be created.
+#'   Defaults to the current working directory.
+#' @param derive_from UUID of an upstream phenotype to derive from.
+#' @param registry_path Path to registry.yaml (used when derive_from is set).
+#' @return Invisibly returns the path to the project directory.
+#' @export
+crio_init_interactive <- function(output_dir = NULL, derive_from = NULL,
+                                   registry_path = NULL) {
+  upstream <- NULL
+  if (!is.null(derive_from)) {
+    cat(cli::style_bold("\nLoading upstream phenotype…\n"))
+    upstream <- .load_upstream(derive_from, registry_path)
+    cat(cli::col_green("✓"), "Found:", cli::style_bold(upstream$phenotype_name %||% derive_from), "\n")
+    cat("  PI:", upstream$pi_name %||% "—", "\n")
+    cat("  Version:", upstream$version %||% "—", "\n")
+    cat("  Status:", upstream$validation_status %||% "—", "\n\n")
+  }
+
+  inv <- .collect_investigator()
+
+  pi_role    <- .crio_choose("PI role",
+    c("researcher", "clinical_ops", "data_scientist", "quality_analyst", "informaticist"))
+  department <- .crio_prompt("Department")
+
+  cat(cli::style_bold("\n── Phenotype ────────────────────────────────────────\n"))
+  phenotype_name     <- .crio_prompt("Phenotype name")
+  domain             <- .crio_choose("Domain",
+    c("condition", "drug", "procedure", "measurement", "observation"))
+  description        <- .crio_prompt("Description")
+  inclusion_criteria <- .crio_prompt("Inclusion criteria")
+  exclusion_criteria <- .crio_prompt("Exclusion criteria")
+
+  compute <- .infer_sce_tier()
+  irb     <- .infer_irb(compute$sce_tier)
+
+  funding_source <- .crio_prompt("Funding source (optional, Enter to skip)", default = "")
+  if (nchar(funding_source) == 0) funding_source <- NULL
+
+  derived_version <- derivation_rationale <- NULL
+  if (!is.null(derive_from)) {
+    derivation_rationale <- .crio_prompt("Derivation rationale")
+    derived_version      <- upstream$version
+  }
+
+  crio_init(
+    pi_name                     = inv$pi_name,
+    pi_email                    = inv$pi_email,
+    department                  = department,
+    phenotype_name              = phenotype_name,
+    domain                      = domain,
+    sce_tier                    = compute$sce_tier,
+    data_tier                   = compute$data_tier,
+    environment                 = compute$environment,
+    description                 = description,
+    inclusion_criteria          = inclusion_criteria,
+    exclusion_criteria          = exclusion_criteria,
+    pi_role                     = pi_role,
+    pi_orcid                    = inv$pi_orcid,
+    staff_id                    = inv$staff_id,
+    omop_aligned                = compute$omop_aligned,
+    clarity_required            = compute$clarity_required,
+    irb_number                  = irb$irb_number,
+    irb_status                  = irb$irb_status,
+    funding_source              = funding_source,
+    output_dir                  = output_dir,
+    derive_from                 = derive_from,
+    derived_version             = derived_version,
+    derivation_rationale        = derivation_rationale,
+    upstream_inclusion_criteria = upstream$inclusion_criteria,
+    upstream_exclusion_criteria = upstream$exclusion_criteria
+  )
 }
