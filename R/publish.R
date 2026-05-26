@@ -114,7 +114,8 @@ crio_publish <- function(project_dir = NULL, library_dir = NULL,
   .update_registry(library_dir, schema)
 
   # git commit
-  git <- function(...) system2("git", c("-C", library_dir, ...), stdout = TRUE, stderr = TRUE)
+  # system2 with stdout=TRUE runs via a shell, so args with spaces need shQuote.
+  git <- function(...) system2("git", c(shQuote("-C"), shQuote(library_dir), ...), stdout = TRUE, stderr = TRUE)
   git("init")
   git(c("add", "-A"))
 
@@ -125,7 +126,7 @@ crio_publish <- function(project_dir = NULL, library_dir = NULL,
       schema$phenotype$name, schema$phenotype$version,
       substr(project_id, 1, 8), message
     )
-    git(c("commit", "-m", commit_msg))
+    git(c("commit", "-m", shQuote(commit_msg)))
     cat(cli::col_green("✓"), "Committed:", message, "\n")
   } else {
     cat("Nothing to commit — no changes detected\n")
