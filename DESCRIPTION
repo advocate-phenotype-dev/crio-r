@@ -1,0 +1,22 @@
+Package: crio
+Title: Clinical Research Informatics Orchestration
+Version: 0.1.0
+Authors@R:
+    person("Erich", "Huang", email = "erich@wakehealth.edu",
+           role = c("aut", "cre"), comment = c(ORCID = "0000-0002-6585-9429"))
+Description: Phenotype library management for Advocate Health clinical
+    researchers. Provides tools to initialize, validate, publish, and
+    export phenotype definitions following the advocate-phenotype schema.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.1
+Imports:
+    cli,
+    jsonlite,
+    uuid,
+    yaml
+Suggests:
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3

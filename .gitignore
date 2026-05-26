@@ -1,0 +1,23 @@
+# R package artifacts
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Build / install
+*.tar.gz
+*.zip
+/doc/
+/Meta/
+/man/
+
+# devtools / roxygen
+/inst/doc/
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+*.lock
