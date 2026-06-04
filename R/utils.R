@@ -52,6 +52,26 @@ NULL
   }
 }
 
+# Returns list(name, email) from an active `az` session, or NULL if unavailable.
+.az_identity <- function() {
+  if (nchar(Sys.which("az")) == 0) return(NULL)
+  tryCatch({
+    out <- suppressWarnings(system2(
+      "az",
+      c("ad", "signed-in-user", "show",
+        "--query", "{name:displayName,email:mail,upn:userPrincipalName}",
+        "--output", "json"),
+      stdout = TRUE, stderr = FALSE
+    ))
+    parsed <- jsonlite::fromJSON(paste(out, collapse = "\n"))
+    list(
+      name  = parsed$name,
+      email = if (!is.null(parsed$email) && nchar(parsed$email) > 0)
+                parsed$email else parsed$upn
+    )
+  }, error = function(e) NULL)
+}
+
 .write_schema <- function(schema, path) {
   yaml_str <- yaml::as.yaml(schema, indent = 2)
   yaml_str <- gsub(":\\s*\\{\\}", ": []", yaml_str)

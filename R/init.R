@@ -103,8 +103,13 @@ SCE_TIER_LABELS <- c(
 
 .collect_investigator <- function() {
   cat(cli::style_bold("\n── Investigator ─────────────────────────────────────\n"))
-  pi_name  <- .crio_prompt("PI full name")
-  pi_email <- .crio_prompt("Institutional email")
+  az <- .az_identity()
+  if (!is.null(az)) {
+    cat(cli::col_cyan("  Resolved from Azure SSO:"),
+        az$name, "<", az$email, ">\n")
+  }
+  pi_name  <- .crio_prompt("PI full name",        default = az$name)
+  pi_email <- .crio_prompt("Institutional email", default = az$email)
   use_orcid <- .crio_confirm("Do you have an ORCID?", default = TRUE)
   pi_orcid <- staff_id <- NULL
   if (use_orcid) {
