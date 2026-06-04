@@ -58,17 +58,12 @@ NULL
   tryCatch({
     out <- suppressWarnings(system2(
       "az",
-      c("ad", "signed-in-user", "show",
-        "--query", "{name:displayName,email:mail,upn:userPrincipalName}",
-        "--output", "json"),
+      c("ad", "signed-in-user", "show", "--output", "json"),
       stdout = TRUE, stderr = FALSE
     ))
     parsed <- jsonlite::fromJSON(paste(out, collapse = "\n"))
-    list(
-      name  = parsed$name,
-      email = if (!is.null(parsed$email) && nchar(parsed$email) > 0)
-                parsed$email else parsed$upn
-    )
+    email <- parsed$mail %||% parsed$userPrincipalName
+    list(name = parsed$displayName, email = email)
   }, error = function(e) NULL)
 }
 
