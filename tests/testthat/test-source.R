@@ -79,8 +79,16 @@ test_that("crio_source errors when no advocate-phenotype.yaml in tree", {
   expect_error(crio_source(tmp, sandbox = TRUE), "No advocate-phenotype.yaml found")
 })
 
-test_that("crio_source sandbox=FALSE errors (production not configured)", {
+test_that("crio_source sandbox=FALSE uses az token or errors gracefully", {
   tmp <- withr::local_tempdir()
   write_schema(tmp)
-  expect_error(crio_source(tmp, sandbox = FALSE), "not yet configured")
+  az_tok <- crio:::.az_token()
+  if (is.null(az_tok)) {
+    expect_error(crio_source(tmp, sandbox = FALSE), "No active Azure CLI session")
+  } else {
+    session <- crio_source(tmp, sandbox = FALSE)
+    expect_equal(session$mode, "production")
+    expect_false(is.null(session$token))
+    expect_false(is.null(session$expires_at))
+  }
 })

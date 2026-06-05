@@ -75,17 +75,31 @@ crio_source <- function(project_dir = NULL, sandbox = TRUE) {
     cat("   For now: open the TRE portal manually and source from within.\n\n")
   }
 
-  if (!sandbox) {
-    stop("Production credential endpoint not yet configured. Use sandbox = TRUE.")
+  if (sandbox) {
+    session <- modifyList(SANDBOX_CREDENTIALS, list(
+      issued_at   = now,
+      sce_tier    = comp$sce_tier,
+      environment = comp$environment %||% "local",
+      project_id  = as.character(proj$id),
+      pi_orcid    = inv$pi_orcid %||% ""
+    ))
+  } else {
+    az_tok <- .az_token()
+    if (is.null(az_tok)) {
+      stop("No active Azure CLI session. Run `az login` and try again.")
+    }
+    session <- list(
+      mode           = "production",
+      sce_tier       = comp$sce_tier,
+      environment    = comp$environment %||% "local",
+      library_remote = SANDBOX_CREDENTIALS$library_remote,
+      token          = az_tok$token,
+      issued_at      = now,
+      expires_at     = az_tok$expires_at,
+      project_id     = as.character(proj$id),
+      pi_orcid       = inv$pi_orcid %||% ""
+    )
   }
-
-  session <- modifyList(SANDBOX_CREDENTIALS, list(
-    issued_at  = now,
-    sce_tier   = comp$sce_tier,
-    environment = comp$environment %||% "local",
-    project_id = as.character(proj$id),
-    pi_orcid   = inv$pi_orcid %||% ""
-  ))
 
   lock_path <- file.path(project_dir, SESSION_LOCK)
   writeLines(jsonlite::toJSON(session, auto_unbox = TRUE, null = "null", pretty = TRUE),

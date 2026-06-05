@@ -67,6 +67,23 @@ NULL
   }, error = function(e) NULL)
 }
 
+# Returns list(token, expires_at, tenant) from an active `az` session, or NULL.
+.az_token <- function() {
+  if (nchar(Sys.which("az")) == 0) return(NULL)
+  tryCatch({
+    out <- suppressWarnings(system2(
+      "az", c("account", "get-access-token", "--output", "json"),
+      stdout = TRUE, stderr = FALSE
+    ))
+    parsed <- jsonlite::fromJSON(paste(out, collapse = "\n"))
+    list(
+      token      = parsed$accessToken,
+      expires_at = parsed$expiresOn,
+      tenant     = parsed$tenant
+    )
+  }, error = function(e) NULL)
+}
+
 .write_schema <- function(schema, path) {
   yaml_str <- yaml::as.yaml(schema, indent = 2)
   yaml_str <- gsub(":\\s*\\{\\}", ": []", yaml_str)
