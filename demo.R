@@ -23,6 +23,22 @@ library(crio)
 cat("\n========== crio-r demo ==========\n\n")
 
 # ---------------------------------------------------------------------------
+# 0. Interactive init with Azure SSO (optional — requires az login)
+# ---------------------------------------------------------------------------
+# crio_init_interactive() runs a guided interview. When an active Azure CLI
+# session is present it resolves the signed-in user's display name and
+# institutional email automatically, pre-filling those prompts so the
+# researcher only has to hit Enter to accept:
+#
+#   ── Investigator ─────────────────────────────────────
+#     Resolved from Azure SSO: Huang, Erich S <Erich.Huang@Advocatehealth.org>
+#     PI full name [Huang, Erich S]:
+#     Institutional email [Erich.Huang@Advocatehealth.org]:
+#
+# Uncomment to try it (runs interactively — cannot be scripted):
+# crio_init_interactive(output_dir = file.path(tempdir(), "my-phenotype"))
+
+# ---------------------------------------------------------------------------
 # 1. Initialize a phenotype project (non-interactive)
 # ---------------------------------------------------------------------------
 cat("── 1. crio_init() ──────────────────────────────────────────────────────\n")
@@ -95,6 +111,7 @@ invisible(lapply(
 # ---------------------------------------------------------------------------
 cat("\n── 2. crio_source() ─────────────────────────────────────────────────────\n")
 
+# Sandbox mode: uses a mock token — no Azure login required.
 session <- crio_source(project_dir, sandbox = TRUE)
 
 cat("\nSession environment variables:\n")
@@ -102,6 +119,16 @@ cat("  CRIO_PROJECT_ID :", Sys.getenv("CRIO_PROJECT_ID"), "\n")
 cat("  CRIO_SCE_TIER   :", Sys.getenv("CRIO_SCE_TIER"),   "\n")
 cat("  CRIO_ENVIRONMENT:", Sys.getenv("CRIO_ENVIRONMENT"), "\n")
 cat("  CRIO_SANDBOX    :", Sys.getenv("CRIO_SANDBOX"),     "\n")
+
+# Production mode: resolves a real Bearer token from the active Azure CLI
+# session (`az login`). Writes mode="production" + token + expires_at to
+# .advocate/session.lock.
+tryCatch({
+  cat("\nProduction session (az login detected):\n")
+  crio_source(project_dir, sandbox = FALSE)
+}, error = function(e) {
+  cat("\nSkipping production session —", conditionMessage(e), "\n")
+})
 
 # ---------------------------------------------------------------------------
 # 3. Validate the schema
